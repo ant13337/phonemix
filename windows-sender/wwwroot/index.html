@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PhoneMix</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; max-width: 32rem; margin: 3rem auto; padding: 0 1.25rem; }
+    h1 { margin-bottom: .25rem; }
+    p { color: #555; }
+    label { display: block; margin-top: 2rem; }
+    input { width: 100%; }
+    button { font: inherit; padding: .6rem 1rem; margin-top: 1.5rem; }
+    #status { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>PhoneMix</h1>
+  <p>Keep this page open while your phone is connected to its Bluetooth headphones.
+    The access token in the URL protects the stream.</p>
+  <div id="status">Not connected</div>
+  <button id="start">Start PC audio</button>
+  <label for="volume">PC audio: <span id="volumeValue">100%</span></label>
+  <input id="volume" type="range" min="0" max="300" value="100">
+  <script>
+    const status = document.querySelector("#status");
+    const start = document.querySelector("#start");
+    const volume = document.querySelector("#volume");
+    const volumeValue = document.querySelector("#volumeValue");
+    const channels = 2;
+    const targetBufferSamples = 4800;
+    const maximumBufferSamples = 24000;
+    let context, gain, socket, queue = [], queuedSamples = 0, playing = false;
+
+    volume.addEventListener("input", () => {
+      volumeValue.textContent = `${volume.value}%`;
+      if (gain) gain.gain.value = Number(volume.value) / 100;
+    });
+
+    start.addEventListener("click", async () => {
+      start.disabled = true;
+      context = new AudioContext({ sampleRate: 48000 });
+      gain = context.createGain();
+      gain.gain.value = Number(volume.value) / 100;
+      gain.connect(context.destination);
+      const processor = context.createScriptProcessor(1024, 2, 2);
+      processor.onaudioprocess = event => {
+        const left = event.outputBuffer.getChannelData(0);
+        const right = event.outputBuffer.getChannelData(1);
+        if (!playing && queuedSamples >= targetBufferSamples) {
+          playing = true;
+          status.textContent = "Connected";
+        }
+        for (let i = 0; i < left.length; i++) {
+          if (!playing || !queue.length) {
+            left[i] = right[i] = 0;
+            playing = false;
+            continue;
+          }
+          const current = queue[0];
+          left[i] = current.data[current.offset++] / 32768;
+          right[i] = current.data[current.offset++] / 32768;
+          queuedSamples -= channels;
+          if (current.offset >= current.data.length) queue.shift();
+        }
+        if (!playing) status.textContent = "Buffering...";
+      };
+      processor.connect(gain);
+      const token = new URLSearchParams(location.search).get("token");
+      if (!token) {
+        status.textContent = "Missing access token. Use the complete URL printed by PhoneMix.";
+        start.disabled = false;
+        return;
+      }
+      socket = new WebSocket(`ws://${location.host}/audio?token=${encodeURIComponent(token)}`);
+      socket.binaryType = "arraybuffer";
+      socket.onopen = () => { status.textContent = "Connected"; };
+      socket.onclose = () => { status.textContent = "Disconnected"; start.disabled = false; };
+      socket.onerror = () => { status.textContent = "Connection error"; };
+      socket.onmessage = event => {
+        const input = new Int16Array(event.data);
+        queue.push({ data: input, offset: 0 });
+        queuedSamples += input.length;
+        if (queuedSamples > maximumBufferSamples) {
+          while (queuedSamples > maximumBufferSamples && queue.length) {
+            const oldest = queue.shift();
+            queuedSamples -= oldest.data.length - oldest.offset;
+          }
+          queuedSamples = queue.reduce((total, packet) => total + packet.data.length - packet.offset, 0);
+        }
+      };
+      await context.resume();
+      status.textContent = "Connecting...";
+    });
+  </script>
+</body>
+</html>

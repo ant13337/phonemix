@@ -1,0 +1,11 @@
+bin/
+obj/
+build/
+.gradle/
+.idea/
+local.properties
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
